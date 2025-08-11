@@ -1,3 +1,13 @@
+/**
+ * @file Plan.h
+ * @brief Provides a high-level, RAII-compliant, range-based C++ wrapper for
+ * FFTW plans.
+ *
+ * This file defines the `FFTWpp::Ranges::Plan` class, which encapsulates an
+ * FFTW plan. It leverages C++20 ranges and views to provide a modern, safe, and
+ * expressive interface for creating, managing, and executing FFTW transforms.
+ * The `Plan` class handles resource management automatically via RAII.
+ */
 #ifndef FFTWPP_PLAN_GUARD_H
 #define FFTWPP_PLAN_GUARD_H
 
@@ -17,22 +27,52 @@
 
 namespace FFTWpp {
 
+/**
+ * @brief Contains range-based wrappers for FFTW functionality.
+ */
 namespace Ranges {
 
+/**
+ * @class Plan
+ * @brief A high-level, RAII-compliant wrapper for an FFTW plan using C++20
+ * ranges.
+ * @details This class manages the lifecycle of an FFTW plan. It is constructed
+ * with `FFTWpp::View` objects that describe the input and output data layouts.
+ * The appropriate FFTW plan is created based on the data types and transform
+ * parameters. The plan is automatically destroyed when the `Plan` object goes
+ * out of scope.
+ *
+ * @tparam InView The type of the input view, must satisfy
+ * `RealOrComplexWritableRange`.
+ * @tparam OutView The type of the output view, must satisfy
+ * `RealOrComplexWritableRange`.
+ * @requires The precision of the input and output views must be the same.
+ */
 template <NumericConcepts::RealOrComplexWritableRange InView,
           NumericConcepts::RealOrComplexWritableRange OutView>
 requires NumericConcepts::SameRangePrecision<InView, OutView>
 
 class Plan {
+  /// @brief The value type of the input range (e.g., `std::complex<double>`).
   using InType = std::ranges::range_value_t<InView>;
+  /// @brief The value type of the output range (e.g., `double`).
   using OutType = std::ranges::range_value_t<OutView>;
+  /// @brief The underlying real precision of the data (e.g., `double`).
   using Real = NumericConcepts::RemoveComplex<InType>;
 
  public:
-  // Remove default constructor;
+  /** @brief Default constructor is deleted. A plan must be initialized with
+   * views. */
   Plan() = delete;
 
-  // Constructor for C2C.
+  /**
+   * @brief Constructor for complex-to-complex (C2C) transforms.
+   * @param in The input data view.
+   * @param out The output data view.
+   * @param flag The planner flag (`Estimate`, `Measure`, etc.).
+   * @param direction The direction of the transform (`Forward` or `Backward`).
+   * @requires Both InType and OutType must be complex types.
+   */
   Plan(View<InView> in, View<OutView> out, Flag flag, Direction direction)
   requires NumericConcepts::Complex<InType> and
                NumericConcepts::Complex<OutType>
@@ -41,7 +81,14 @@ class Plan {
     MakePlan(_flag);
   }
 
-  // Constructor for R2C or C2R.
+  /**
+   * @brief Constructor for real-to-complex (R2C) or complex-to-real (C2R)
+   * transforms.
+   * @param in The input data view.
+   * @param out The output data view.
+   * @param flag The planner flag (`Estimate`, `Measure`, etc.).
+   * @requires One of InType/OutType must be real and the other complex.
+   */
   Plan(View<InView> in, View<OutView> out, Flag flag)
   requires(NumericConcepts::Complex<InType> and
            NumericConcepts::Real<OutType>) or
@@ -52,7 +99,18 @@ class Plan {
     MakePlan(_flag);
   }
 
-  // Constructor for R2R.
+  /**
+   * @brief Constructor for real-to-real (R2R) transforms.
+   * @details If fewer `kinds` are provided than the rank of the transform, the
+   * last provided kind is used for all remaining dimensions.
+   * @tparam RealKinds A parameter pack of `FFTWpp::RealKind`.
+   * @param in The input data view.
+   * @param out The output data view.
+   * @param flag The planner flag (`Estimate`, `Measure`, etc.).
+   * @param kinds A list of `RealKind` for each dimension of the transform.
+   * @requires Both InType and OutType must be real types. At least one kind
+   * must be specified.
+   */
   template <typename... RealKinds>
   requires(sizeof...(RealKinds) > 0) and
               (std::same_as<RealKinds, RealKind> && ...)
@@ -73,7 +131,14 @@ class Plan {
     MakePlan(_flag);
   }
 
-  // Copy constructor.
+  /**
+   * @brief Copy constructor. Creates a new plan based on the other's
+   * configuration.
+   * @details This creates a new FFTW plan. If the original plan was created
+   * with `Measure`, this copy will be created with `WisdomOnly` to reuse the
+   * wisdom, otherwise `Estimate` is used.
+   * @param other The Plan object to copy from.
+   */
   Plan(const Plan& other)
       : _in{other._in},
         _out{other._out},
@@ -84,7 +149,12 @@ class Plan {
     MakePlan(flag);
   }
 
-  // Move constructor.
+  /**
+   * @brief Move constructor. Takes ownership of the other plan's configuration.
+   * @details The moved-from object's plan is destroyed. The new plan is created
+   * using wisdom if available.
+   * @param other The Plan object to move from.
+   */
   Plan(Plan&& other)
       : _in{std::move(other._in)},
         _out{std::move(other._out)},
@@ -96,7 +166,13 @@ class Plan {
     MakePlan(flag);
   }
 
-  // Copy assignment.
+  /**
+   * @brief Copy assignment operator.
+   * @details Destroys the current plan and creates a new one based on the
+   * other's configuration, using wisdom if available.
+   * @param other The Plan object to copy from.
+   * @return A reference to this object.
+   */
   auto& operator=(const Plan& other) {
     _in = other._in;
     _out = other._out;
@@ -108,7 +184,13 @@ class Plan {
     return *this;
   }
 
-  // Move assignment.
+  /**
+   * @brief Move assignment operator.
+   * @details Destroys the current plan and takes ownership of the other plan's
+   * configuration. The moved-from plan is destroyed.
+   * @param other The Plan object to move from.
+   * @return A reference to this object.
+   */
   auto& operator=(Plan&& other) {
     other.Destroy();
     _in = std::move(other._in);
@@ -121,10 +203,15 @@ class Plan {
     return *this;
   }
 
-  // Destructor.
+  /**
+   * @brief Destructor. Destroys the underlying FFTW plan.
+   */
   ~Plan() { Destroy(); }
 
-  // return pointer to the fftw3 plan.
+  /**
+   * @brief Gets a const pointer to the underlying `fftw*_plan` handle.
+   * @return The raw FFTW plan handle.
+   */
   auto Pointer() const {
     if constexpr (NumericConcepts::Float<Real>) {
       return std::get<fftwf_plan>(_plan);
@@ -137,6 +224,10 @@ class Plan {
     }
   }
 
+  /**
+   * @brief Gets a non-const reference to the underlying `fftw*_plan` handle.
+   * @return A reference to the raw FFTW plan handle.
+   */
   auto& Pointer() {
     if constexpr (NumericConcepts::Float<Real>) {
       return std::get<fftwf_plan>(_plan);
@@ -149,10 +240,20 @@ class Plan {
     }
   }
 
-  // Returns true is plan is not set up.
+  /**
+   * @brief Checks if the underlying plan is null.
+   * @return `true` if the plan has not been created or has been destroyed,
+   * `false` otherwise.
+   */
   auto IsNull() { return Pointer() == nullptr; }
 
-  // Normalisation factor for inverse transformations.
+  /**
+   * @brief Calculates the normalization factor for an inverse transform.
+   * @details The normalization factor is `1 / N`, where `N` is the total
+   * logical size of the transform dimensions. For R2R transforms, this uses the
+   * `LogicalDimension` of each transform kind.
+   * @return The normalization factor, cast to the output value type.
+   */
   auto Normalisation() const {
     int dim;
     if constexpr (NumericConcepts::Complex<InType> ||
@@ -169,10 +270,22 @@ class Plan {
     return static_cast<OutType>(1) / static_cast<OutType>(dim);
   }
 
-  // Execute the plan.
+  /**
+   * @brief Executes the plan on the views provided during construction.
+   */
   void Execute() { FFTWpp::Execute(Pointer()); }
 
-  // Execute using new data.
+  /**
+   * @brief Executes the plan using new input and output data buffers.
+   * @details This allows a plan to be reused with different data arrays,
+   * provided they have the same layout and alignment characteristics as the
+   * originals.
+   * @tparam NewInView A range type for the new input data.
+   * @tparam NewOutView A range type for the new output data.
+   * @param in The new input data range.
+   * @param out The new output data range.
+   * @requires The value types of the new ranges must match the original ranges.
+   */
   template <NumericConcepts::RealOrComplexWritableRange NewInView,
             NumericConcepts::RealOrComplexWritableRange NewOutView>
   requires NumericConcepts::SameRangeValueType<InView, NewInView> &&
@@ -182,13 +295,24 @@ class Plan {
   }
 
  private:
+  /// @brief The input data view.
   View<InView> _in;
+  /// @brief The output data view.
   View<OutView> _out;
+  /// @brief The planner flag used for creation.
   Flag _flag;
+  /// @brief The transform direction (for C2C transforms).
   std::variant<std::monostate, Direction> _direction;
+  /// @brief The kinds of transform (for R2R transforms).
   std::variant<std::monostate, std::vector<RealKind>> _kinds;
+  /// @brief A variant holding the precision-specific FFTW plan handle.
   std::variant<fftwf_plan, fftw_plan, fftwl_plan> _plan;
 
+  /**
+   * @brief Validates that input/output view dimensions are compatible for the
+   * transform.
+   * @return `true` if dimensions are valid, `false` otherwise.
+   */
   auto CheckInputs() const {
     if (_in.Rank() != _out.Rank()) return false;
     if (_in.HowMany() != _out.HowMany()) return false;
@@ -196,6 +320,7 @@ class Plan {
       return std::ranges::equal(_in.N(), _out.N());
     } else if constexpr (NumericConcepts::Complex<InType> &&
                          NumericConcepts::Real<OutType>) {
+      // C2R: Output is real, last dimension of input is N/2 + 1
       return std::ranges::equal(
                  _in.N() | std::views::reverse | std::views::take(1),
                  _out.N() | std::views::reverse | std::views::take(1),
@@ -205,6 +330,7 @@ class Plan {
                  _out.N() | std::views::reverse | std::views::drop(1));
     } else if constexpr (NumericConcepts::Real<InType> &&
                          NumericConcepts::Complex<OutType>) {
+      // R2C: Input is real, last dimension of output is N/2 + 1
       return std::ranges::equal(
                  _in.N() | std::views::reverse | std::views::take(1),
                  _out.N() | std::views::reverse | std::views::take(1),
@@ -215,6 +341,12 @@ class Plan {
     }
   }
 
+  /**
+   * @brief Creates the underlying FFTW plan using the current configuration.
+   * @details This function dispatches to the correct `FFTWpp::Plan` function
+   * from `Core.h` based on the data types of the input and output views.
+   * @param flag The planner flag to use for creation.
+   */
   void MakePlan(Flag flag) {
     if constexpr (NumericConcepts::Complex<InType> &&
                   NumericConcepts::Complex<OutType>) {
@@ -249,13 +381,20 @@ class Plan {
     assert(!IsNull());
   }
 
+  /**
+   * @brief Gets a view of the `RealKind`s for an R2R transform.
+   * @return A view over the vector of `RealKind`s.
+   * @requires The transform must be real-to-real.
+   */
   auto Kinds() const
   requires(NumericConcepts::Real<InType> && NumericConcepts::Real<OutType>)
   {
     return std::ranges::views::all(std::get<std::vector<RealKind>>(_kinds));
   }
 
-  // Destroy the stored plan.
+  /**
+   * @brief Destroys the stored plan and resets the pointer to null.
+   */
   void Destroy() {
     if (IsNull()) return;
     FFTWpp::Destroy(Pointer());
