@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <complex>
+#include <numeric>
 #include <random>
 #include <ranges>
 
@@ -39,19 +40,16 @@ template <NumericConcepts::RealOrComplex InType,
 requires(sizeof...(Dimensions) > 0) and (std::integral<Dimensions> && ...)
 auto DataSize(Dimensions... dimensions) {
   auto dims = std::vector{{dimensions...}};
-  auto size0 = std::ranges::fold_left_first(std::ranges::views::all(dims),
-                                            std::multiplies<>())
-                   .value();
+  auto size0 = std::accumulate(dims.begin(), dims.end(), 1,
+                               std::multiplies<>());
   if constexpr (std::same_as<InType, OutType>) {
     return std::pair(size0, size0);
   } else {
     auto rank = dims.size();
     auto last = dims.back();
     auto size1 =
-        std::ranges::fold_left_first(
-            std::ranges::views::all(dims) | std::ranges::views::take(rank - 1),
-            std::multiplies<>())
-            .value_or(1) *
+        std::accumulate(dims.begin(), dims.begin() + rank - 1, 1,
+                        std::multiplies<>()) *
         (last / 2 + 1);
     if constexpr (NumericConcepts::Real<InType> &&
                   NumericConcepts::Complex<OutType>) {
@@ -108,11 +106,12 @@ requires requires() {
 }
 auto CheckValues(Range&& in, Range&& copy, Scalar norm) {
   using Real = NumericConcepts::RemoveComplex<Scalar>;
-  return std::ranges::all_of(
-      std::ranges::views::zip_transform(
-          [norm](auto x, auto y) { return std::abs(x - y * norm); },
-          std::ranges::views::all(in), std::ranges::views::all(copy)),
-      [](auto x) { return x < 1000 * std::numeric_limits<Real>::epsilon(); });
+  return std::ranges::equal(
+      in, copy,
+      [norm](auto x, auto y) {
+        return std::abs(x - y * norm) <
+               1000 * std::numeric_limits<Real>::epsilon();
+      });
 }
 
 }  // namespace FFTWpp

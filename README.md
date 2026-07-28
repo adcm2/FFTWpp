@@ -83,24 +83,26 @@ int main() {
         planForward.Execute();
     }
 
-    // 6. Create and execute the backward plan (temp -> out)
-    FFTWpp::Ranges::Plan planBackward(tempView, outView, FFTWpp::Measure, FFTWpp::Backward);
-    std::cout << "Executing backward DFT..." << std::endl;
-    planBackward.Execute();
+    {
+        // 6. Create and execute the backward plan (temp -> out)
+        FFTWpp::Ranges::Plan planBackward(tempView, outView, FFTWpp::Measure, FFTWpp::Backward);
+        std::cout << "Executing backward DFT..." << std::endl;
+        planBackward.Execute();
 
-    // 7. Normalize the result of the backward transform
-    auto norm = planBackward.Normalisation();
-    std::transform(out.begin(), out.end(), out.begin(),
-                   [norm](auto x){ return x * norm; });
+        // 7. Normalize the result of the backward transform
+        auto norm = planBackward.Normalisation();
+        std::transform(out.begin(), out.end(), out.begin(),
+                       [norm](auto x){ return x * norm; });
 
-    // 8. Verify that the result matches the original input
-    if (FFTWpp::CheckValues(in, out, 1.0)) {
-        std::cout << "Success! The inverse transform matches the original data." << std::endl;
-    } else {
-        std::cout << "Failure! The inverse transform does not match." << std::endl;
+        // 8. Verify that the result matches the original input
+        if (FFTWpp::CheckValues(in, out, 1.0)) {
+            std::cout << "Success! The inverse transform matches the original data." << std::endl;
+        } else {
+            std::cout << "Failure! The inverse transform does not match." << std::endl;
+        }
     }
 
-    // 9. Clean up global FFTW data
+    // 9. Clean up global FFTW data only after every plan has been destroyed.
     FFTWpp::CleanUp();
     return 0;
 }
@@ -156,6 +158,17 @@ FFTWpp::ExportWisdom("my_fftw_wisdom.dat");
 FFTWpp::ImportWisdom("my_fftw_wisdom.dat");
 
 ```
+
+`ExportWisdom` and `ImportWisdom` operate on FFTW's double-precision wisdom
+store. `ForgetWisdom` clears the float, double, and long-double stores.
+`CleanUp` releases serial FFTW process-global planner state for all three
+precisions; it does not destroy plans or clean up the optional FFTW threads
+interfaces. Destroy every live plan before calling it.
+
+## Testing
+
+See [docs/testing.md](docs/testing.md) for the test inventory and sanitizer
+workflow.
 
 ## Library Structure
 

@@ -16,7 +16,10 @@
 #include <complex>
 #include <initializer_list>
 #include <ranges>
+#include <stdexcept>
+#include <utility>
 #include <variant>
+#include <vector>
 
 #include "Core.h"
 #include "NumericConcepts/Numeric.hpp"
@@ -119,14 +122,26 @@ class Plan {
         _out{out},
         _flag{flag},
         _kinds{std::vector<RealKind>{kinds...}} {
-    assert(Kinds().size() <= _in.Rank());
-    if (Kinds().size() < _in.Rank()) {
-      auto kinds = std::get<std::vector<RealKind>>(_kinds);
-      while (kinds.size() < _in.Rank()) {
-        kinds.push_back(kinds.back());
-      }
-      _kinds = kinds;
-    }
+    CompleteKinds();
+    assert(CheckInputs());
+    MakePlan(_flag);
+  }
+
+  /**
+   * @brief Constructor for real-to-real transforms with a dynamic kind list.
+   * @param in The input data view.
+   * @param out The output data view.
+   * @param flag The planner flag.
+   * @param kinds The transform kind for each dimension.
+   */
+  Plan(View<InView> in, View<OutView> out, Flag flag,
+       std::vector<RealKind> kinds)
+  requires NumericConcepts::Real<InType> and NumericConcepts::Real<OutType>
+      : _in{in},
+        _out{out},
+        _flag{flag},
+        _kinds{std::move(kinds)} {
+    CompleteKinds();
     assert(CheckInputs());
     MakePlan(_flag);
   }
@@ -151,8 +166,8 @@ class Plan {
 
   /**
    * @brief Move constructor. Takes ownership of the other plan's configuration.
-   * @details The moved-from object's plan is destroyed. The new plan is created
-   * using wisdom if available.
+   * @details Transfers the FFTW handle directly and leaves the moved-from
+   * object null and safely destructible.
    * @param other The Plan object to move from.
    */
   Plan(Plan&& other)
@@ -160,10 +175,9 @@ class Plan {
         _out{std::move(other._out)},
         _flag{std::move(other._flag)},
         _direction{std::move(other._direction)},
-        _kinds{std::move(other._kinds)} {
-    other.Destroy();
-    auto flag = _flag == Estimate ? Estimate : WisdomOnly;
-    MakePlan(flag);
+        _kinds{std::move(other._kinds)},
+        _plan{std::move(other._plan)} {
+    other.Pointer() = nullptr;
   }
 
   /**
@@ -174,32 +188,24 @@ class Plan {
    * @return A reference to this object.
    */
   auto& operator=(const Plan& other) {
-    _in = other._in;
-    _out = other._out;
-    _flag = other._flag;
-    _direction = other._direction;
-    _kinds = other._kinds;
-    auto flag = _flag == Estimate ? Estimate : WisdomOnly;
-    MakePlan(flag);
+    if (this == &other) return *this;
+    Plan replacement(other);
+    Swap(replacement);
     return *this;
   }
 
   /**
    * @brief Move assignment operator.
-   * @details Destroys the current plan and takes ownership of the other plan's
-   * configuration. The moved-from plan is destroyed.
+   * @details Replaces the current plan with the other's FFTW handle. The
+   * previous destination plan is destroyed and the source is left null and
+   * safely destructible.
    * @param other The Plan object to move from.
    * @return A reference to this object.
    */
   auto& operator=(Plan&& other) {
-    other.Destroy();
-    _in = std::move(other._in);
-    _out = std::move(other._out);
-    _flag = std::move(other._flag);
-    _direction = std::move(other._direction);
-    _kinds = std::move(other._kinds);
-    auto flag = _flag == Estimate ? Estimate : WisdomOnly;
-    MakePlan(flag);
+    if (this == &other) return *this;
+    Plan replacement(std::move(other));
+    Swap(replacement);
     return *this;
   }
 
@@ -255,17 +261,16 @@ class Plan {
    * @return The normalization factor, cast to the output value type.
    */
   auto Normalisation() const {
-    int dim;
+    int dim = 1;
     if constexpr (NumericConcepts::Complex<InType> ||
                   NumericConcepts::Complex<OutType>) {
-      dim = std::ranges::fold_left_first(_out.N(), std::multiplies<>()).value();
+      for (auto n : _out.N()) dim *= n;
     } else {
-      dim = std::ranges::fold_left_first(
-                std::ranges::views::zip_transform(
-                    [](auto n, auto kind) { return kind.LogicalDimension(n); },
-                    _out.N(), Kinds()),
-                std::multiplies<>())
-                .value();
+      auto kind = Kinds().begin();
+      for (auto n : _out.N()) {
+        dim *= kind->LogicalDimension(n);
+        ++kind;
+      }
     }
     return static_cast<OutType>(1) / static_cast<OutType>(dim);
   }
@@ -307,6 +312,20 @@ class Plan {
   std::variant<std::monostate, std::vector<RealKind>> _kinds;
   /// @brief A variant holding the precision-specific FFTW plan handle.
   std::variant<fftwf_plan, fftw_plan, fftwl_plan> _plan;
+
+  /**
+   * @brief Validates and expands an R2R kind list to the transform rank.
+   */
+  void CompleteKinds()
+  requires(NumericConcepts::Real<InType> && NumericConcepts::Real<OutType>)
+  {
+    auto& kinds = std::get<std::vector<RealKind>>(_kinds);
+    if (kinds.empty() || kinds.size() > static_cast<std::size_t>(_in.Rank())) {
+      throw std::invalid_argument(
+          "an R2R plan requires between one and rank transform kinds");
+    }
+    kinds.resize(_in.Rank(), kinds.back());
+  }
 
   /**
    * @brief Validates that input/output view dimensions are compatible for the
@@ -378,7 +397,9 @@ class Plan {
                            _in.Dist(), _out.DataPointer(), _out.EmbedPointer(),
                            _out.Stride(), _out.Dist(), kinds.data(), flag);
     }
-    assert(!IsNull());
+    if (IsNull()) {
+      throw std::runtime_error("FFTW failed to create a plan");
+    }
   }
 
   /**
@@ -395,10 +416,23 @@ class Plan {
   /**
    * @brief Destroys the stored plan and resets the pointer to null.
    */
-  void Destroy() {
+  void Destroy() noexcept {
     if (IsNull()) return;
     FFTWpp::Destroy(Pointer());
     Pointer() = nullptr;
+  }
+
+  /**
+   * @brief Exchanges complete ownership and configuration with another plan.
+   */
+  void Swap(Plan& other) {
+    using std::swap;
+    swap(_in, other._in);
+    swap(_out, other._out);
+    swap(_flag, other._flag);
+    swap(_direction, other._direction);
+    swap(_kinds, other._kinds);
+    swap(_plan, other._plan);
   }
 };
 
