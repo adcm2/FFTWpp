@@ -11,7 +11,9 @@
 #define FFTWPP_WISDOM_GUARD_H
 
 #include <cassert>
+#include <stdexcept>
 #include <string>
+#include <vector>
 
 #include "NumericConcepts/Numeric.hpp"
 #include "NumericConcepts/Ranges.hpp"
@@ -23,38 +25,41 @@
 namespace FFTWpp {
 
 /**
- * @brief Exports all accumulated wisdom to a file.
- * @details This function calls `fftw_export_wisdom_to_filename`, which saves
- * wisdom for all precisions (float, double, and long double) that FFTW knows
- * about. The function will assert if the file cannot be written to.
+ * @brief Exports accumulated double-precision wisdom to a file.
+ * @details FFTW maintains a separate wisdom store for each precision. This
+ * overload calls `fftw_export_wisdom_to_filename` and throws if the file cannot
+ * be written.
  * @param filename The path to the file where wisdom will be saved.
  */
-void ExportWisdom(const std::string& filename) {
+inline void ExportWisdom(const std::string& filename) {
   int io = fftw_export_wisdom_to_filename(filename.c_str());
-  assert(io == 0);
+  if (io == 0) {
+    throw std::runtime_error("failed to export double-precision FFTW wisdom");
+  }
 }
 
 /**
- * @brief Imports wisdom from a file.
- * @details This function calls `fftw_import_wisdom_from_filename`, which reads
- * wisdom from a file and merges it with any existing wisdom in memory. This can
- * be called multiple times. The function will assert if the file cannot be
- * read.
+ * @brief Imports double-precision wisdom from a file.
+ * @details FFTW maintains a separate wisdom store for each precision. This
+ * overload calls `fftw_import_wisdom_from_filename` and throws if the file
+ * cannot be read.
  * @param filename The path to the file from which to load wisdom.
  */
-void ImportWisdom(const std::string& filename) {
+inline void ImportWisdom(const std::string& filename) {
   int io = fftw_import_wisdom_from_filename(filename.c_str());
-  assert(io == 0);
+  if (io == 0) {
+    throw std::runtime_error("failed to import double-precision FFTW wisdom");
+  }
 }
 
 /**
- * @brief Forgets all accumulated double-precision wisdom.
- * @warning This function only calls `fftw_forget_wisdom()`, which affects
- * double-precision plans. It does NOT forget wisdom for float (`fftwf_plan`)
- * or long double (`fftwl_plan`) precisions. To forget all wisdom, one
- * must call `fftwf_forget_wisdom()` and `fftwl_forget_wisdom()` separately.
+ * @brief Forgets accumulated wisdom for float, double, and long double.
  */
-void ForgetWisdom() { fftw_forget_wisdom(); }
+inline void ForgetWisdom() {
+  fftwf_forget_wisdom();
+  fftw_forget_wisdom();
+  fftwl_forget_wisdom();
+}
 
 /**
  * @brief Generates wisdom for complex-to-complex, real-to-complex, or
@@ -84,8 +89,8 @@ void GenerateWisdom(Ranges::Layout inLayout, Ranges::Layout outLayout,
   auto outView = Ranges::View(out, outLayout);
   if constexpr (NumericConcepts::Complex<InType> &&
                 NumericConcepts::Complex<OutType>) {
-    auto plan = Ranges::Plan(inView, outView, flag, Forward);
-    plan = Ranges::Plan(outView, inView, flag, Backward);
+    auto planForward = Ranges::Plan(inView, outView, flag, Forward);
+    auto planBackward = Ranges::Plan(outView, inView, flag, Backward);
   }
   if constexpr ((NumericConcepts::Real<InType> &&
                  NumericConcepts::Complex<OutType>) ||
@@ -101,10 +106,6 @@ void GenerateWisdom(Ranges::Layout inLayout, Ranges::Layout outLayout,
  * @details This function populates the FFTW wisdom cache for R2R transforms of
  * a given layout and kind. It creates plans for both the forward and backward
  * transforms.
- * @warning The current implementation for generating the backward plan's kinds
- * creates a lazy `std::ranges::views::transform` whose result is discarded.
- * This means the backward plan is likely created with the original forward
- * kinds, not their inverses as was probably intended.
  * @tparam InType Real input value type.
  * @tparam OutType Real output value type.
  * @param inLayout The layout (shape) of the input data.
@@ -122,11 +123,13 @@ void GenerateWisdom(Ranges::Layout inLayout, Ranges::Layout outLayout,
   auto inView = Ranges::View(in, inLayout);
   auto out = vector<OutType>(outLayout.size());
   auto outView = Ranges::View(out, outLayout);
-  auto planForward = Ranges::Plan(inView, outView, kinds, flag);
-  auto kindsBackward = kinds;
-  std::ranges::views::all(kindsBackward) |
-      std::ranges::views::transform([](auto kind) { return kind.Inverse(); });
-  auto planBackward = Ranges::Plan(outView, inView, kindsBackward, flag);
+  auto kindsForward = std::vector<RealKind>(kinds);
+  auto kindsBackward = std::vector<RealKind>();
+  kindsBackward.reserve(kindsForward.size());
+  std::ranges::transform(kindsForward, std::back_inserter(kindsBackward),
+                         [](auto kind) { return kind.Inverse(); });
+  auto planForward = Ranges::Plan(inView, outView, flag, kindsForward);
+  auto planBackward = Ranges::Plan(outView, inView, flag, kindsBackward);
 }
 
 }  // namespace FFTWpp

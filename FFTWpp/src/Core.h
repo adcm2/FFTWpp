@@ -116,12 +116,13 @@ template <typename T>
 using vector = std::vector<T, Allocator<T>>;
 
 /**
- * @brief Cleans up all memory and resources used by FFTW.
+ * @brief Cleans up FFTW's process-global state for all supported precisions.
  * @details This function calls `fftwf_cleanup`, `fftw_cleanup`, and
- * `fftwl_cleanup` to release all wisdom, threads, and other global data for all
- * precisions. It should be called once when your program is finished with FFTW.
+ * `fftwl_cleanup`. It releases wisdom and other serial FFTW planner state, but
+ * it does not destroy plans or clean up the optional FFTW threads interfaces.
+ * All plans must be destroyed before this function is called.
  */
-void CleanUp() {
+inline void CleanUp() {
   fftwf_cleanup();
   fftw_cleanup();
   fftwl_cleanup();
