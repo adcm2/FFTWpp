@@ -16,7 +16,6 @@
 #include <complex>
 #include <concepts>
 #include <memory>
-#include <numeric>
 #include <ranges>
 #include <vector>
 
@@ -104,8 +103,9 @@ class Layout {
    * @return The total number of elements in memory.
    */
   auto size() const {
-    return HowMany() * std::accumulate(Embed().begin(), Embed().end(), 1,
-                                       std::multiplies<>());
+    return HowMany() *
+           std::ranges::fold_left_first(Embed(), std::multiplies<>())
+               .value_or(0);
   }
 
   /** @brief Defaulted equality operator. */

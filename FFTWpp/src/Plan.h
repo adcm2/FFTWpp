@@ -261,16 +261,17 @@ class Plan {
    * @return The normalization factor, cast to the output value type.
    */
   auto Normalisation() const {
-    int dim = 1;
+    int dim;
     if constexpr (NumericConcepts::Complex<InType> ||
                   NumericConcepts::Complex<OutType>) {
-      for (auto n : _out.N()) dim *= n;
+      dim = std::ranges::fold_left_first(_out.N(), std::multiplies<>()).value();
     } else {
-      auto kind = Kinds().begin();
-      for (auto n : _out.N()) {
-        dim *= kind->LogicalDimension(n);
-        ++kind;
-      }
+      dim = std::ranges::fold_left_first(
+                std::ranges::views::zip_transform(
+                    [](auto n, auto kind) { return kind.LogicalDimension(n); },
+                    _out.N(), Kinds()),
+                std::multiplies<>())
+                .value();
     }
     return static_cast<OutType>(1) / static_cast<OutType>(dim);
   }
